@@ -1,0 +1,19 @@
+{
+  "example-episode-id": [
+    {
+      "step": 8,
+      "type": "newroom",
+      "room_from": "hallway",
+      "room_to": "living room",
+      "progress_ratio": 0.35,
+      "event_evidence": "EXAMPLE ONLY: replace with simulator room transition and traveled/total distance measurements"
+    },
+    {
+      "step": 20,
+      "type": "correction_part1",
+      "correction_end_step": 26,
+      "progress_ratio": null,
+      "event_evidence": "EXAMPLE ONLY: replace with collector deviation event and correction interval"
+    }
+  ]
+}

@@ -10,6 +10,8 @@ from queue import Empty
 import random
 import re
 import time
+import sys
+from pathlib import Path
 from urllib.parse import quote, urlsplit
 
 import cv2
@@ -33,6 +35,10 @@ from result_store import append_result, load_result_rows, result_directory_lock
 from openai import OpenAI
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from navigation_memory import memory_prompt, parse_reply
+
+
 SYSTEM_PROMPT = "You are a visual language navigation model."
 
 def encode_image_base64(image):
@@ -46,7 +52,7 @@ def seed_all():
 
 def evaluate_agent(result_queue, base_url, model_name, config, dataset, result_path,
                     forward_distance, turn_angle, max_action_history, resolution_ratio,
-                    save_video, pass_k, done_rows) -> None:
+                    save_video, pass_k, done_rows, reasoning=False) -> None:
 
     env = Env(config.habitat, dataset)
 
@@ -59,7 +65,7 @@ def evaluate_agent(result_queue, base_url, model_name, config, dataset, result_p
             turn_angle,
             max_action_history,
             resolution_ratio,
-            save_video=save_video)
+            save_video=save_video, reasoning=reasoning)
 
         episodes_snapshot = list(env.episodes)
         
@@ -119,6 +125,10 @@ def evaluate_agent(result_queue, base_url, model_name, config, dataset, result_p
                     "steps": iter_step,
                     "episode_instruction": episode_instruction
                 }
+                if reasoning:
+                    result.update(reasoning_updates=agent.reasoning_updates, decisions=agent.decisions,
+                                  model_calls=agent.decisions + agent.reasoning_updates,
+                                  invalid_mode_replies=agent.invalid_mode_replies)
                 if "ndtw" in info:
                     result["ndtw"] = info["ndtw"]
                 if "sdtw" in info:
@@ -137,8 +147,9 @@ def evaluate_agent(result_queue, base_url, model_name, config, dataset, result_p
 class SimpleVLN_Agent(Agent):
     def __init__(self, base_url, model_name, result_path, forward_distance,
                     turn_angle, max_action_history, resolution_ratio,
-                    save_video=False):
+                    save_video=False, reasoning=False):
 
+        self.reasoning = reasoning
         self.result_path = result_path
         self.save_video = save_video
         self.forward_distance = forward_distance
@@ -184,6 +195,7 @@ class SimpleVLN_Agent(Agent):
             max_completion_tokens=self.max_tokens,
             temperature=self.temperature,
             top_p=self.top_p,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
 
         output_text = outputs.choices[0].message.content
@@ -191,6 +203,15 @@ class SimpleVLN_Agent(Agent):
         output_text = output_text.strip()
 
         return output_text
+
+    def predict_memory_turn(self, action_only=False):
+        reply = self.predict_inference()
+        try:
+            return parse_reply(reply, action_only=action_only)
+        except ValueError:
+            # Use the existing unknown-action fallback. Never execute words from invalid prose.
+            self.invalid_mode_replies += 1
+            return "ACTION", ""
 
     def extract_multi_result(self, output):
         sub_actions = output.split(', ')
@@ -291,6 +312,12 @@ class SimpleVLN_Agent(Agent):
 
         self.pending_action_list = []
         self.rgb_list = []
+        self.step_idx = -1
+        self.memory = ""
+        self.last_reason_step = None
+        self.reasoning_updates = 0
+        self.decisions = 0
+        self.invalid_mode_replies = 0
 
         self.conversations = []
         self.conversations.append({
@@ -299,6 +326,7 @@ class SimpleVLN_Agent(Agent):
         
     def act(self, observations, info, episode_id):
 
+        self.step_idx += 1
         self.episode_id = episode_id
         rgb = observations["rgb"]
         if self.resolution_ratio < 1:
@@ -332,7 +360,8 @@ class SimpleVLN_Agent(Agent):
         content.append({"type": "text", "text": ' and an image of the current observation'})
         content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encode_image_base64(self.rgb_list[-1])}"}})
         item = self.promt_template.format(observations["instruction"]["text"]).split('current observation.', 1)
-        content.append({"type": "text", "text": "." + item[1]})
+        base_tail = "." + item[1]
+        content.append({"type": "text", "text": base_tail})
 
 
         self.conversations.append({
@@ -340,7 +369,19 @@ class SimpleVLN_Agent(Agent):
                 "content": content
             })
 
-        navigation = self.predict_inference()
+        if self.reasoning:
+            self.decisions += 1
+            steps_ago = None if self.last_reason_step is None else self.step_idx - self.last_reason_step
+            content[-1] = {"type": "text", "text": base_tail + memory_prompt(self.memory, steps_ago=steps_ago)}
+            mode, navigation = self.predict_memory_turn()
+            if mode == "REASON":
+                self.memory = navigation
+                self.last_reason_step = self.step_idx
+                self.reasoning_updates += 1
+                content[-1] = {"type": "text", "text": base_tail + memory_prompt(self.memory, action_only=True, steps_ago=0)}
+                _, navigation = self.predict_memory_turn(action_only=True)
+        else:
+            navigation = self.predict_inference()
         
         if self.save_video:
             img = self.addtext(output_im, observations["instruction"]["text"], navigation)
@@ -428,6 +469,7 @@ def main():
         action="store_true",
         help="if set, save per-episode top-down+gifs under result-path/video",
     )
+    parser.add_argument("--reasoning", action="store_true", help="Enable learned memory updates before action chunks")
     args = parser.parse_args()
 
     try:
@@ -442,10 +484,31 @@ def main():
     if not 0 < args.resolution_ratio <= 1:
         parser.error("--resolution-ratio must be in (0, 1]")
     with result_directory_lock(args.result_path):
-        run_evaluation(args, vllm_base_url)
+        import wandb
+        from pathlib import Path
+        # W&B creates its own wandb/ subdirectory inside this parent.
+        log_dir = Path(os.environ.get("WANDB_DIR") or args.result_path).resolve()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        run = wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "simplevln-eval"),
+            name=Path(args.result_path).name,
+            group=Path(args.result_path).parent.name,
+            mode="offline", dir=str(log_dir), config=vars(args),
+        )
+        run.summary["status"] = "running"
+        try:
+            run_evaluation(args, vllm_base_url, tracking_run=run)
+        except BaseException:
+            run.summary["status"] = "interrupted_or_failed"
+            run.finish(exit_code=1)
+            raise
+        else:
+            run.summary["status"] = "completed"
+            run.finish()
 
 
-def run_evaluation(args, vllm_base_url):
+
+def run_evaluation(args, vllm_base_url, tracking_run=None):
     config = get_config(args.exp_config)
     if abs(config.habitat.simulator.forward_step_size * 100 - args.forward_distance) > 1e-6:
         raise ValueError("--forward-distance (cm) must match simulator.forward_step_size (m)")
@@ -494,6 +557,7 @@ def run_evaluation(args, vllm_base_url):
     done_rows = load_result_rows(args.result_path, pass_k=args.pass_k,
                                 trajectories=trajectories, required_metrics=required_metrics)
 
+    metric_rows = list(done_rows.values())
     manager = mp.Manager()
     result_queue = manager.Queue()
     processes = []
@@ -513,6 +577,7 @@ def run_evaluation(args, vllm_base_url):
                 args.save_video,
                 args.pass_k,
                 done_rows,
+                getattr(args, "reasoning", False),
             )
             p = mp.Process(target=evaluate_agent, args=worker_args, daemon=True)
             p.start()
@@ -530,11 +595,22 @@ def run_evaluation(args, vllm_base_url):
                     row = result.pop("result_row", None)
                     if row is not None:
                         append_result(args.result_path, row)
+                        metric_rows.append(row)
                     done_count += 1
                     if "success" in result:
                         succ_sum += float(result["success"])
                         succ_done += 1
                     sr = (succ_sum / succ_done) if succ_done else 0.0
+                    if tracking_run is not None:
+                        metrics = summarize_results(metric_rows, args.pass_k)
+                        tracking_run.log({
+                            **{f"eval/{key}": value for key, value in metrics.items()
+                               if isinstance(value, (int, float)) and np.isfinite(value)},
+                            "progress/processed": done_count,
+                            "progress/total": target,
+                            "progress/completed_records": len(metric_rows),
+                            "progress/fraction": done_count / target,
+                        }, step=done_count)
                     pbar.update(1)
                     pbar.set_postfix(sr=f"{sr:.4f}", **result)
                 except Empty:
@@ -567,6 +643,9 @@ def run_evaluation(args, vllm_base_url):
     summary = summarize_results(rows.values(), args.pass_k)
     print(json.dumps(summary, ensure_ascii=False))
     append_result(args.result_path, summary)
+    if tracking_run is not None:
+        tracking_run.summary.update({f"final/{key}": value for key, value in summary.items()
+                                     if isinstance(value, (int, float)) and np.isfinite(value)})
 
 
 def summarize_results(rows, pass_k):

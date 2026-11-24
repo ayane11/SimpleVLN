@@ -7,9 +7,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT.parent))
 sys.path.insert(0, str(ROOT / 'tool'))
+from navigation_memory import strip_stale_next_plan
 import convert_common as common
 import convert_vln as vln
 import convert_dagger as dagger
@@ -59,6 +62,128 @@ class ConversionTests(unittest.TestCase):
         self.assertEqual(len(common.load_episodes(path)), 2)
         path.write_text('[1,2]')
         with self.assertRaises(ValueError): common.load_episodes(path)
+
+    def test_node_boundary_and_memory_supervision(self):
+        self.frames('scene_1', 4)
+        ep = self.episode()
+        index = {'["r2r","1",0]': {'instruction': 'go', 'segments': [
+            {'type': 'newroom', 'index': 1, 'updated_content': 'door visible'},
+            {'type': 'newroom', 'index': 3, 'updated_content': 'at goal'}]}}
+        samples, control = [], []
+        for rows, plain in [(samples, False), (control, True)]:
+            vln.convert_episode_vln(ep, self.root, rows, cot_index=index, dataset='r2r', action_control=plain)
+        actions = [row for row in samples if row['messages'][1]['value'].startswith('ACTION: ')]
+        self.assertEqual([r['messages'][1]['value'][8:] for r in actions],
+                         [r['messages'][1]['value'] for r in control])
+        self.assertEqual([Path(r['images'][-1]).name for r in samples],
+                         ['000.jpg', '001.jpg', '001.jpg', '003.jpg', '003.jpg'])
+        self.assertNotIn('door visible', samples[1]['messages'][0]['value'])
+        self.assertIn('Navigation memory (updated 0 steps ago): door visible', samples[2]['messages'][0]['value'])
+        self.assertIn('Navigation memory (updated 2 steps ago): door visible', samples[3]['messages'][0]['value'])
+        self.assertNotIn('at goal', samples[3]['messages'][0]['value'])
+        self.assertIn('Navigation memory (updated 0 steps ago): at goal', samples[4]['messages'][0]['value'])
+
+    def test_steps_ago_and_stale_next_plan_stripping(self):
+        self.frames('scene_1', 6)
+        ep = self.episode(actions=[-1, 1, 2, 1, 3, 1, 0])
+        index = {'["r2r","1",0]': {'instruction': 'go', 'segments': [
+            {'type': 'newroom', 'index': 0, 'updated_content': 'I see a hall. The next plan is to move forward.'},
+            {'type': 'newroom', 'index': 5, 'updated_content': 'I see a door. The next plan is to stop and wait.'}]}}
+        samples = []
+        with patch.object(vln, 'MAX_ACTIONS_PER_SAMPLE', 1), patch.object(vln, 'COMBINE_PROB', 0.0):
+            vln.convert_episode_vln(ep, self.root, samples, cot_index=index, dataset='r2r')
+        self.assertIn('updated 0 steps ago): I see a hall. The next plan is to move forward.', samples[1]['messages'][0]['value'])
+        self.assertIn('updated 1 step ago): I see a hall.', samples[2]['messages'][0]['value'])
+        self.assertNotIn('The next plan is to move forward.', samples[2]['messages'][0]['value'])
+        self.assertIn('updated 5 steps ago): I see a hall.', samples[6]['messages'][0]['value'])
+        self.assertEqual(strip_stale_next_plan('The next plan is to move forward.'), 'The next plan is to move forward.')
+
+    def test_scheme_1a_sampling_buffer_drop_and_stop_protection(self):
+        self.frames('scene_1', 15)
+        ep = self.episode(actions=[-1] + [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 1, 0])
+        index = {'["r2r","1",0]': {'instruction': 'go', 'segments': [
+            {'type': 'newroom', 'index': 12, 'updated_content': 'I see stairs. The next plan is to move forward.'}]}}
+        full_samples, filtered_samples = [], []
+        with patch.object(vln, 'MAX_ACTIONS_PER_SAMPLE', 1), patch.object(vln, 'COMBINE_PROB', 0.0):
+            vln.convert_episode_vln(ep, self.root, full_samples, cot_index=index, dataset='r2r')
+            vln.convert_episode_vln(
+                ep, self.root, filtered_samples, cot_index=index, dataset='r2r',
+                drop_pre_node_buffer=True, direct_action_keep_prob=0.35, stop_repeat=2,
+                sampling_rng=random.Random(42))
+        self.assertFalse(any(Path(r['images'][-1]).name == '011.jpg' for r in filtered_samples))
+        full_reasons = [r for r in full_samples if r['messages'][1]['value'].startswith('REASON: ')]
+        filt_reasons = [r for r in filtered_samples if r['messages'][1]['value'].startswith('REASON: ')]
+        self.assertEqual(filt_reasons, full_reasons)
+        filt_after = [r for r in filtered_samples if 'Return ACTION:' in r['messages'][0]['value']]
+        full_after = [r for r in full_samples if 'Return ACTION:' in r['messages'][0]['value']]
+        self.assertEqual(filt_after, full_after)
+        filt_stops = [r for r in filtered_samples if r['messages'][1]['value'] == 'ACTION: stop']
+        self.assertEqual(len(filt_stops), 2)
+        self.assertLess(len(filtered_samples), len(full_samples))
+
+    def test_soft_window_trapezoidal_prob_and_full_no_downsample(self):
+        self.assertAlmostEqual(vln.soft_window_reason_prob(10, 15, 10), 0.5)
+        self.assertAlmostEqual(vln.soft_window_reason_prob(10, 15, 11.25), 0.75)
+        self.assertAlmostEqual(vln.soft_window_reason_prob(10, 15, 15), 0.3)
+
+        self.frames('scene_1', 20)
+        ep = self.episode(actions=[-1] + [1, 2, 3] * 6 + [1, 0])
+        index = {'["r2r","1",0]': {'instruction': 'go', 'segments': [
+            {'type': 'only_act', 'start_step': 0, 'end_step': 8, 'content': None, 'updated_content': None},
+            {'type': 'newroom', 'start_step': 8, 'end_step': 13, 'index': 8,
+             'content': None, 'updated_content': 'Entered hallway. The next plan is to move forward.'},
+            {'type': 'only_act', 'start_step': 13, 'end_step': 20,
+             'content': 'Entered hallway. The next plan is to move forward.', 'updated_content': None},
+        ]}}
+        samples = []
+        stats = vln.Counter()
+        with patch.object(vln, 'MAX_ACTIONS_PER_SAMPLE', 1), patch.object(vln, 'COMBINE_PROB', 0.0):
+            vln.convert_episode_vln(
+                ep, self.root, samples, cot_index=index, dataset='r2r',
+                soft_window=True, soft_window_pre_frames=1,
+                direct_action_keep_prob=1.0, stop_repeat=2,
+                empty_memory_drop_prob=0.0, sampling_rng=random.Random(7), stats=stats,
+            )
+        # All 5 frames in [7, 12) (i.e. index-1 .. index+3) must be represented and no only_act dropped.
+        frame_names = {Path(r['images'][-1]).name for r in samples}
+        for step in range(20):
+            self.assertIn(f'{step:03d}.jpg', frame_names)
+        self.assertEqual(stats['dropped_direct_move'], 0)
+        self.assertGreater(stats['choice_reason'], 0)
+        self.assertEqual(stats['choice_reason'], stats['action_after_reason'])
+        # Stop at final frame is preserved and repeated once (total 2 exact stop copies).
+        stops = [r for r in samples if r['messages'][1]['value'] == 'ACTION: stop']
+        self.assertEqual(len(stops), 2)
+        # Post-window frames carry updated memory with steps_ago > 0 and stripped stale plan.
+        late = [r for r in samples if Path(r['images'][-1]).name == '016.jpg']
+        self.assertEqual(len(late), 1)
+        self.assertIn('Entered hallway.', late[0]['messages'][0]['value'])
+        self.assertNotIn('The next plan is to move forward.', late[0]['messages'][0]['value'])
+
+    def test_soft_window_cli_end_to_end(self):
+        self.frames('scene_1', 11)
+        ep = self.episode(actions=[-1, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 0])
+        ann = self.root / 'r2r.json'
+        ann.write_text(json.dumps([ep]))
+        cot = self.root / 'cot_index.json'
+        cot.write_text(json.dumps({'["r2r","1",0]': {'instruction': 'go', 'segments': [
+            {'type': 'newroom', 'start_step': 4, 'end_step': 9, 'index': 4,
+             'content': None, 'updated_content': 'Entered kitchen.'},
+        ]}}))
+        out = self.root / 'out.json'
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'tool/convert_vln.py'),
+             '--annotation_path', str(ann), '--image_root', str(self.root),
+             '--output_path', str(out), '--cot-index', str(cot), '--dataset', 'r2r',
+             '--soft-window', '--soft-window-pre-frames', '1',
+             '--direct-action-keep-prob', '1.0', '--stop-repeat', '2',
+             '--empty-memory-drop-prob', '0.1'],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = json.loads(out.read_text())
+        self.assertTrue(any(r['messages'][1]['value'].startswith('REASON: ') for r in rows))
+        self.assertTrue(any(r['messages'][1]['value'] == 'ACTION: stop' for r in rows))
 
     def test_missing_frames_are_not_padded_for_movement(self):
         self.frames('scene_1', 1)

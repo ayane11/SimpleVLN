@@ -250,12 +250,18 @@ Evaluation writes per-trial records and aggregate metrics to:
 
 ```text
 eval/results/simplevln_qwen3vl_4b/
-├── r2r_pass1/result.json
-└── rxr_pass1/result.json
+├── r2r_pass1/
+│   ├── result.json
+│   └── wandb/offline-run-*/
+└── rxr_pass1/
+    ├── result.json
+    └── wandb/offline-run-*/
 ```
 
-Each file uses JSON Lines format, with one object per line. The aggregate summary
-is also printed to the terminal.
+Each `result.json` uses JSON Lines format, with one object per line. The aggregate
+summary is also printed to the terminal. Offline W&B records are stored in the
+`wandb/` subdirectory of each benchmark result directory. Set `WANDB_DIR` to
+override the logging parent directory; W&B creates a `wandb/` subdirectory there.
 
 | Field | Metric |
 |---|---|

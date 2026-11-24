@@ -4,20 +4,46 @@
 # --vllm_num_servers <N>.
 #
 # Usage:
-#   MODEL_PATH=/path/to/hf-ckpt bash serve_vllm.sh [NUM_GPUS] [TP_SIZE]
-#   NUM_GPUS default 8, TP_SIZE default 1  →  8 servers on 22001..22008
+#   bash eval/scripts/serve_vllm.sh 1 1
+# Defaults: GPU 1, SimpleVLN Qwen3.5 4B RL; run inside dyj_vln.
+#   NUM_GPUS defaults to visible GPU count; TP_SIZE defaults to 1.
 #   NUM_GPUS=8 TP_SIZE=2                    →  4 servers, each on 2 GPUs
 #
 # Server PIDs are written to the run log directory.
 
 set -euo pipefail
 
-MODEL_PATH="${MODEL_PATH:?set MODEL_PATH to a HuggingFace-format checkpoint dir}"
-MODEL_NAME="${MODEL_NAME:-qwen3vl}"
+# Local execution: direct connections and offline experiment tracking.
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+export NO_PROXY="localhost,127.0.0.1,::1"
+export no_proxy="$NO_PROXY"
+export HF_ENDPOINT=https://hf-mirror.com
+export HF_HUB_DISABLE_XET=1
+export WANDB_MODE=offline
+SIMPLEVLN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export VLN_DATA_ROOT="${VLN_DATA_ROOT:-${SIMPLEVLN_ROOT}/eval/data/vln_data}"
+export HF_HOME="${SIMPLEVLN_ROOT}/.cache/huggingface"
+export XDG_CACHE_HOME="${SIMPLEVLN_ROOT}/.cache"
+export TMPDIR="${SIMPLEVLN_ROOT}/.cache/tmp"
+mkdir -p "$HF_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
+
+MODEL_PATH="${MODEL_PATH:-${SIMPLEVLN_ROOT}/checkpoints/SimpleVLN_Qwen35_4B_RL}"
+MODEL_NAME="${MODEL_NAME:-simplevln}"
 BASE_PORT="${BASE_PORT:-22001}"
 LOG_DIR="${LOG_DIR:-$(dirname "$0")/../logs/vllm}"
 
-PYTHON="${PYTHON:-python}"
+PYTHON="${PYTHON:-/root/miniforge3/envs/simplevln-server/bin/python}"
+VLLM_BIN="${VLLM_BIN:-/root/miniforge3/envs/simplevln-server/bin/vllm}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-1}"
+CHAT_TEMPLATE_CONTENT_FORMAT="${CHAT_TEMPLATE_CONTENT_FORMAT:-openai}"
+# Match upstream defaults; allow explicit overrides when needed.
+CAPACITY_ARGS=()
+if [[ -n "${MAX_MODEL_LEN:-}" ]]; then
+    CAPACITY_ARGS+=(--max-model-len "$MAX_MODEL_LEN")
+fi
+if [[ -n "${MAX_NUM_SEQS:-}" ]]; then
+    CAPACITY_ARGS+=(--max-num-seqs "$MAX_NUM_SEQS")
+fi
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-1800}"
 GPU_IDS=()
 if [[ ${CUDA_VISIBLE_DEVICES+x} ]]; then
@@ -90,13 +116,15 @@ for i in $(seq 0 $((NUM_SERVERS - 1))); do
     CUDA_VISIBLE_DEVICES=${DEVICES} \
     XDG_CACHE_HOME="${LOG_DIR}/cache_${i}" \
     VLLM_USE_MODELSCOPE=false \
-    nohup vllm serve "$MODEL_PATH" \
+    nohup "$VLLM_BIN" serve "$MODEL_PATH" \
         --served-model-name "$MODEL_NAME" \
         --tensor-parallel-size "$TP_SIZE" \
-        --gpu-memory-utilization 0.8 \
+        --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.8}" \
+        "${CAPACITY_ARGS[@]}" \
         --mm-encoder-tp-mode data \
         --async-scheduling \
         --enable-prefix-caching \
+        --chat-template-content-format "$CHAT_TEMPLATE_CONTENT_FORMAT" \
         --host 0.0.0.0 \
         --port "$PORT" \
         > "$LOG_FILE" 2>&1 &

@@ -32,7 +32,8 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
             env = {**os.environ, 'PATH': str(path) + os.pathsep + os.environ['PATH'],
-                   'MODEL_PATH': 'mock', 'LOG_DIR': str(path / 'logs'), 'BASE_PORT': str(port),
+                   'MODEL_PATH': 'mock', 'VLLM_BIN': str(fake),
+                   'LOG_DIR': str(path / 'logs'), 'BASE_PORT': str(port),
                    'CUDA_VISIBLE_DEVICES': '4,7', 'NUM_GPUS': '2', 'TP_SIZE': '2',
                    'STARTUP_TIMEOUT': '5', 'PYTHON': sys.executable, 'CAPTURE': str(path / 'capture'),
                    'http_proxy': 'http://127.0.0.1:1', 'HTTP_PROXY': 'http://127.0.0.1:1',
@@ -44,6 +45,8 @@ HTTPServer(('127.0.0.1', int(sys.argv[sys.argv.index('--port') + 1])), Handler).
                 captured = json.loads((path / 'capture').read_text())
                 self.assertEqual(captured['devices'], '4,7')
                 self.assertNotIn('--compilation-config', captured['args'])
+                idx = captured['args'].index('--chat-template-content-format')
+                self.assertEqual(captured['args'][idx + 1], 'openai')
                 self.assertIn('is ready', result.stdout)
             finally:
                 for pid_file in (path / 'logs').glob('*/server.pids'):

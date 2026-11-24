@@ -1,0 +1,12 @@
+{
+  "r2r": {
+    "787": {"50": "Unsupported current-view vanity description"},
+    "2177": {"10": "Contradictory instruction progress"},
+    "4234": {"95": "Premature archway completion"},
+    "7391": {"52": "Stale active subtask", "56": "Stale active subtask"}
+  },
+  "rxr": {
+    "14998": {"84": "Premature destination completion"},
+    "47988": {"60": "Unsupported stairs progress"}
+  }
+}

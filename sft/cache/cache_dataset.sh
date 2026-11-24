@@ -11,8 +11,8 @@ set -euo pipefail
 #   bash cache_dataset.sh                    # cache all five datasets
 #   bash cache_dataset.sh SFT/R2R SFT/RxR    # cache selected datasets
 
-MODEL="/path/to/models/Qwen3-VL-4B-Instruct"
-CACHE_DIR="/path/to/cache_data"
+MODEL="${MODEL:-/path/to/models/Qwen3-VL-4B-Instruct}"
+CACHE_DIR="${CACHE_DIR:-/path/to/cache_data}"
 JSON_DIR="${JSON_DIR:-${CACHE_DIR}/annotations}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,6 +23,11 @@ if [ $# -eq 0 ]; then
 else
     DATASETS=("$@")
 fi
+
+model_args=()
+if [[ -n "${MODEL_TYPE:-}" ]]; then model_args+=(--model_type "$MODEL_TYPE"); fi
+
+if [[ -n "${TEMPLATE:-}" ]]; then model_args+=(--template "$TEMPLATE"); fi
 
 for DATASET in "${DATASETS[@]}"; do
     case "${DATASET}" in
@@ -50,7 +55,7 @@ for DATASET in "${DATASETS[@]}"; do
 
     MAX_PIXELS=1003520 \
     python "${SCRIPT_DIR}/fast_cache_dataset.py" \
-        --model "${MODEL}" \
+        --model "${MODEL}" "${model_args[@]}" \
         --dataset "${JSON}" \
         --dataset_num_proc 64 \
         --to_cached_dataset true \

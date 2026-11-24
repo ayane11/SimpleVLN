@@ -39,7 +39,7 @@ habitat:
     turn_angle: 15
     requires_textures: true
     habitat_sim_v0:
-      gpu_device_id: -1
+      gpu_device_id: ${oc.env:SIM_GPU_DEVICE_ID,-1}
   task:
     measurements:
       distance_to_goal:
