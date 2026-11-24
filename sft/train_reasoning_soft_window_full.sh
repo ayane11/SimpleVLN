@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 export MODE=reasoning_soft_window
-export SOFT_WINDOW_PRE_FRAMES="${SOFT_WINDOW_PRE_FRAMES:-1}"
+export SOFT_WINDOW_PRE_FRAMES="${SOFT_WINDOW_PRE_FRAMES:-0}"
 export DIRECT_ACTION_KEEP_PROB="${DIRECT_ACTION_KEEP_PROB:-1.0}"
 export STOP_REPEAT="${STOP_REPEAT:-2}"
 export EMPTY_MEMORY_DROP_PROB="${EMPTY_MEMORY_DROP_PROB:-0.1}"

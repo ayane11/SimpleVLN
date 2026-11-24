@@ -185,6 +185,59 @@ class ConversionTests(unittest.TestCase):
         self.assertTrue(any(r['messages'][1]['value'].startswith('REASON: ') for r in rows))
         self.assertTrue(any(r['messages'][1]['value'] == 'ACTION: stop' for r in rows))
 
+    def test_soft_window_post_entry_plan_alignment_and_nonzero_choice_age(self):
+        # Actions after sentinel -1: 0=fwd, 1=fwd, 2=left, 3=fwd, 4=right, 5=fwd, 6=fwd, 7=stop
+        self.frames('scene_1', 8)
+        ep = self.episode(actions=[-1, 1, 1, 2, 1, 3, 1, 1, 0])
+        raw_node = (
+            'I see a hallway. The agent has exited the bedroom. '
+            'The next step is to turn left to proceed down the hall. '
+            'The next plan is to turn left.'
+        )
+        index = {'["r2r","1",0]': {'instruction': 'go', 'segments': [
+            {'type': 'only_act', 'start_step': 0, 'end_step': 2, 'content': None, 'updated_content': None},
+            {'type': 'newroom', 'start_step': 2, 'end_step': 7, 'index': 2,
+             'content': None, 'updated_content': raw_node},
+            {'type': 'only_act', 'start_step': 7, 'end_step': -1, 'content': raw_node, 'updated_content': None},
+        ]}}
+        expected_plan_by_frame = {
+            '002.jpg': 'The next plan is to turn left.',
+            '003.jpg': 'The next plan is to move forward.',
+            '004.jpg': 'The next plan is to turn right.',
+            '005.jpg': 'The next plan is to move forward.',
+            '006.jpg': 'The next plan is to move forward.',
+        }
+        samples = []
+        for seed in range(20):
+            with patch.object(vln, 'MAX_ACTIONS_PER_SAMPLE', 1), patch.object(vln, 'COMBINE_PROB', 0.0):
+                vln.convert_episode_vln(
+                    ep, self.root, samples, cot_index=index, dataset='r2r',
+                    soft_window=True, sampling_rng=random.Random(seed),
+                )
+        for i, row in enumerate(samples):
+            frame = Path(row['images'][-1]).name
+            user_text = row['messages'][0]['value']
+            reply = row['messages'][1]['value']
+            # Redundant prescriptive sentence in progress_assessment must never survive.
+            self.assertNotIn('The next step is to turn left', user_text)
+            self.assertNotIn('The next step is to turn left', reply)
+            # Pre-entry frame 001.jpg must never emit REASON under default pre_frames=0 ([2, 7)).
+            if frame == '001.jpg':
+                self.assertFalse(reply.startswith('REASON: '))
+            # Choice prompts must never carry "updated 0 steps ago".
+            if 'Choose whether' in user_text:
+                self.assertNotIn('updated 0 steps ago', user_text)
+                self.assertNotIn('The next plan is to ', user_text)
+            # Every REASON turn and its paired action_only (steps_ago=0) turn must match frame's expert action.
+            if reply.startswith('REASON: '):
+                self.assertIn(frame, expected_plan_by_frame)
+                expected_plan = expected_plan_by_frame[frame]
+                self.assertTrue(reply.endswith(expected_plan), (frame, reply))
+                follow_up = samples[i + 1]
+                self.assertIn('Return ACTION:', follow_up['messages'][0]['value'])
+                self.assertIn('updated 0 steps ago', follow_up['messages'][0]['value'])
+                self.assertIn(expected_plan, follow_up['messages'][0]['value'])
+
     def test_missing_frames_are_not_padded_for_movement(self):
         self.frames('scene_1', 1)
         with self.assertWarns(UserWarning):

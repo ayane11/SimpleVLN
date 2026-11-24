@@ -15,7 +15,7 @@ from convert_common import (
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from navigation_memory import memory_prompt
+from navigation_memory import clean_reasoning_update, memory_prompt, rewrite_next_plan
 
 
 SYSTEM_PROMPT = "You are a visual language navigation model."
@@ -109,7 +109,7 @@ def soft_window_reason_prob(start_step, end_step, now_step,
     return peak_prob - (peak_prob - end_prob) * ratio
 
 
-def _build_soft_windows(segments, total_steps, pre_frames=1, default_width=5):
+def _build_soft_windows(segments, total_steps, pre_frames=0, default_width=5):
     """Build non-overlapping soft-window descriptors for reasoning segments."""
     raw = []
     for segment in segments:
@@ -131,7 +131,7 @@ def _build_soft_windows(segments, total_steps, pre_frames=1, default_width=5):
             'index': step,
             'start_step': w_start,
             'end_step': w_end,
-            'updated_content': update.strip(),
+            'updated_content': clean_reasoning_update(update),
         })
     raw.sort(key=lambda item: item['index'])
     windows = []
@@ -150,7 +150,7 @@ def _build_soft_windows(segments, total_steps, pre_frames=1, default_width=5):
 def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                         cot_index=None, dataset=None, action_control=False,
                         drop_pre_node_buffer=False, direct_action_keep_prob=1.0,
-                        stop_repeat=1, soft_window=False, soft_window_pre_frames=1,
+                        stop_repeat=1, soft_window=False, soft_window_pre_frames=0,
                         empty_memory_drop_prob=0.0, sampling_rng=None, stats=None):
     if not (0.0 < direct_action_keep_prob <= 1.0):
         raise ValueError(f"direct_action_keep_prob must be in (0, 1], got {direct_action_keep_prob!r}")
@@ -191,7 +191,7 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                 if (step in nodes or not 0 <= step < len(action_texts) or
                         not isinstance(update, str) or not update.strip()):
                     raise ValueError(f"Invalid reasoning node at {key}, step {step}")
-                nodes[step] = update.strip()
+                nodes[step] = clean_reasoning_update(update)
             if soft_window:
                 soft_windows = _build_soft_windows(
                     record['segments'], len(action_texts), pre_frames=soft_window_pre_frames
@@ -236,26 +236,26 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                     if not memory or last_ref_range is None:
                         return None
                     ref_lo, ref_hi = last_ref_range
-                    upper = min(ref_hi, start + 1)
+                    upper = min(ref_hi, start)
                     if ref_lo < upper:
                         ref_step = rng.randrange(ref_lo, upper)
                     else:
-                        ref_step = last_reason_step if last_reason_step is not None else start
-                    return max(0, start - ref_step)
+                        ref_step = min(last_reason_step if last_reason_step is not None else ref_lo, max(0, start - 1))
+                    return max(1, start - ref_step)
 
                 if active_win is not None:
                     w_start = active_win['start_step']
                     w_end = active_win['end_step']
-                    new_memory = active_win['updated_content']
+                    step_memory = rewrite_next_plan(active_win['updated_content'], action_texts[start])
                     p_reason = soft_window_reason_prob(w_start, w_end, start)
                     if rng.random() < p_reason:
                         steps_ago = _prev_steps_ago()
                         decision = prompt + memory_prompt(memory, steps_ago=steps_ago)
-                        turns.append((decision, 'REASON: ' + new_memory))
+                        turns.append((decision, 'REASON: ' + step_memory))
                         if stats is not None:
                             stats['choice_reason'] += 1
 
-                        action_prompt = prompt + memory_prompt(new_memory, action_only=True, steps_ago=0)
+                        action_prompt = prompt + memory_prompt(step_memory, action_only=True, steps_ago=0)
                         action_reply = 'ACTION: ' + action
                         turns.append((action_prompt, action_reply))
                         if stats is not None:
@@ -269,13 +269,14 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                                 stats['stop_repeat_extra'] += stop_repeat - 1
                     else:
                         # AwareVLN window action supervision: 30% old memory, 70% fresh new memory.
-                        if rng.random() < 0.3:
+                        # At start <= w_start, no earlier frame in this window could have updated memory yet.
+                        if start <= w_start or rng.random() < 0.3:
                             ctx_memory = memory
                             ctx_steps_ago = _prev_steps_ago()
                         else:
-                            ctx_memory = new_memory
-                            ref_step = rng.randrange(w_start, start + 1)
-                            ctx_steps_ago = max(0, start - ref_step)
+                            ref_step = rng.randrange(w_start, start)
+                            ctx_memory = rewrite_next_plan(active_win['updated_content'], action_texts[ref_step])
+                            ctx_steps_ago = start - ref_step
                         decision = prompt + memory_prompt(ctx_memory, steps_ago=ctx_steps_ago)
                         action_reply = 'ACTION: ' + action
                         turns.append((decision, action_reply))
@@ -405,8 +406,8 @@ def main():
                         help="Number of copies to emit for exact 'ACTION: stop' samples")
     parser.add_argument("--soft-window", action="store_true",
                         help="Enable AwareVLN-style 5-frame trapezoidal soft-window reasoning sampling")
-    parser.add_argument("--soft-window-pre-frames", type=int, default=1,
-                        help="Frames before segment start_step to include in soft window (default: 1)")
+    parser.add_argument("--soft-window-pre-frames", type=int, default=0,
+                        help="Frames before segment start_step to include in soft window (default: 0)")
     parser.add_argument("--empty-memory-drop-prob", type=float, default=0.0,
                         help="Probability in [0, 1) to drop memory on only_act frames in soft-window mode")
     args = parser.parse_args()

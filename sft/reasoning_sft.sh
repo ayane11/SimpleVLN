@@ -14,7 +14,7 @@ case "$mode" in
         options+=(--direct-action-keep-prob "$DIRECT_ACTION_KEEP_PROB" --stop-repeat "$STOP_REPEAT")
         ;;
     reasoning_soft_window)
-        SOFT_WINDOW_PRE_FRAMES="${SOFT_WINDOW_PRE_FRAMES:-1}"
+        SOFT_WINDOW_PRE_FRAMES="${SOFT_WINDOW_PRE_FRAMES:-0}"
         DIRECT_ACTION_KEEP_PROB="${DIRECT_ACTION_KEEP_PROB:-1.0}"
         STOP_REPEAT="${STOP_REPEAT:-2}"
         EMPTY_MEMORY_DROP_PROB="${EMPTY_MEMORY_DROP_PROB:-0.1}"
