@@ -16,7 +16,7 @@ import habitat_sim
 import habitat_sim.utils.common as hsc
 
 # ----------------------------- Constants -----------------------------
-DATA = os.environ.get("VLN_DATA", "/root/code/data")
+DATA = os.environ.get("VLN_DATA", "/data/vln")
 SCENES_DIR = os.path.join(DATA, "scene_datasets", "mp3d")
 GRAPH_DIR = "./nav_graphs"
 FORWARD_STEP = 0.25          # meters per step

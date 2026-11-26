@@ -467,7 +467,7 @@ def cmd_merge():
     json.dump(stats, open(os.path.join(a.out, "_stats.json"), "w"))
     print(f"Total {tid} trajectories, scenes {len(set(stats['scene']))}")
 
-_DATA = os.environ.get("VLN_DATA", "/root/code/data")
+_DATA = os.environ.get("VLN_DATA", "/data/vln")
 HM3D_ROOT = os.path.join(_DATA, "scene_datasets", "hm3d")
 SV_PATHS = os.path.join(_DATA, "datasets", "scalevln", "ScaleVLN", "scalevln_subset_150k.json.gz")
 PY = sys.executable

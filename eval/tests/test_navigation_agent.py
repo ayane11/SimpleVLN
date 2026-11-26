@@ -134,7 +134,7 @@ class NavigationTests(unittest.TestCase):
     def test_two_round_memory_and_action_queue(self):
         self.agent.reasoning = True
         mem = 'I see a hall. The next plan is to move forward.'
-        self.output = iter([f'REASON: {mem}', 'ACTION: forward 50 cm', 'ACTION: stop'])
+        self.output = iter([f'REASON: {mem}', 'forward 50 cm', 'ACTION: stop'])
         self.assertEqual([self.act(i) for i in range(3)], [1, 1, 0])
         requests = [request for _, request in self.requests]
         self.assertEqual([self.image_labels(r) for r in requests], [['0', '0'], ['0', '0'], ['0', '1', '2']])
@@ -160,7 +160,7 @@ class NavigationTests(unittest.TestCase):
 
     def test_step_idx_survives_history_window_truncation(self):
         self.agent.reasoning = True
-        replies = ['REASON: At start.', 'ACTION: forward 25 cm'] + ['ACTION: forward 25 cm'] * 14
+        replies = ['REASON: At start.', 'forward 25 cm'] + ['ACTION: forward 25 cm'] * 14
         self.output = iter(replies)
         for i in range(15):
             self.assertEqual(self.act(i), 1)
@@ -170,10 +170,19 @@ class NavigationTests(unittest.TestCase):
 
     def test_second_reason_cannot_loop_or_execute_stop_from_prose(self):
         self.agent.reasoning = True
-        self.output = iter(['REASON: Look around.', 'REASON: Do not stop yet.'])
-        self.assertEqual(self.act(0), 3)  # The mocked legacy fallback.
-        self.assertEqual(len(self.requests), 2)
-        self.assertEqual(self.agent.invalid_mode_replies, 1)
+        for bad_turn2 in ('REASON: Do not stop yet.', 'I see the door and should not stop yet.'):
+            with self.subTest(bad_turn2=bad_turn2):
+                self.agent.reset()
+                self.requests.clear()
+                self.agent.invalid_mode_replies = 0
+                self.output = iter(['REASON: Look around.', bad_turn2])
+                self.assertEqual(self.act(0), 3)  # The mocked legacy fallback.
+                self.assertEqual(len(self.requests), 2)
+                self.assertEqual(self.agent.invalid_mode_replies, 1)
+        # Plain action chunks and legacy ACTION-prefixed chunks are both accepted on action_only=True.
+        self.assertEqual(parse_reply('forward 50 cm, turn left 15 degree', action_only=True),
+                         ('ACTION', 'forward 50 cm, turn left 15 degree'))
+        self.assertEqual(parse_reply('ACTION: stop', action_only=True), ('ACTION', 'stop'))
 
     def test_action_parsing_and_invalid_output_fallback(self):
         for text, expected in [('forward', (1, 25)), ('turn left', (2, 15)),

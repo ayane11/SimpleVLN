@@ -1,12 +1,14 @@
+RUNS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/runs"
 # 4 nodes x 8 GPUs. Set NODE_RANK=0..3 and MASTER_ADDR to node 0.
 # pip install tilelang -i https://pypi.mirrors.ustc.edu.cn/simple/
 # pip install nvitop -i https://pypi.mirrors.ustc.edu.cn/simple/
 
 EXPERIMENT_NAME="Qwen_25_3B_stage2"
-OUTPUT_DIR="/path/to/outputs/dagger/${EXPERIMENT_NAME}"
+OUTPUT_DIR="${OUTPUT_DIR:-${RUNS_ROOT}/outputs/sft/dagger/${EXPERIMENT_NAME}}"
 # Root containing converted training JSON files.
-ANNOTATION_DIR="/path/to/cache_data/annotations"
-echo ${OUTPUT_DIR}
+ANNOTATION_DIR="${ANNOTATION_DIR:-${RUNS_ROOT}/simplevln-runtime/cache/sft/annotations}"
+source "$(dirname "${BASH_SOURCE[0]}")/../wandb_env.sh"
+echo "$OUTPUT_DIR"
 
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 NNODES=4 \
@@ -17,7 +19,8 @@ NPROC_PER_NODE=8 \
 MAX_PIXELS=1003520 \
 SWIFT_USE_MCORE_GDN=1 \
 megatron sft \
-    --model /path/to/sft_checkpoint \
+    --report_to wandb --wandb_project SimpleVLN --wandb_exp_name "${EXPERIMENT_NAME}" \
+    --model "${MODEL:?Set MODEL to the matching stage-1 checkpoint}" \
     --save_safetensors true \
     --dataset "${ANNOTATION_DIR}/SFT/R2R.json" "${ANNOTATION_DIR}/SFT/RxR.json" "${ANNOTATION_DIR}/SFT/ScaleVLN.json" "${ANNOTATION_DIR}/DAgger/R2R.json" "${ANNOTATION_DIR}/DAgger/RxR.json" \
     --tensor_model_parallel_size 2 \

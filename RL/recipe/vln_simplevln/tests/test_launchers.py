@@ -38,7 +38,7 @@ def test_presets_produce_valid_hydra_arguments(preset, micro, logprob, padding):
     assert values['actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu'] == logprob
     assert values['actor_rollout_ref.model.use_remove_padding'] == padding
     assert Path(config.actor_rollout_ref.rollout.agent.agent_loop_config_path).is_file()
-    assert values['trainer.logger'] == '[console]'
+    assert values['trainer.logger'] == '[console,wandb]'
     assert values['actor_rollout_ref.rollout.max_model_len'] == '4352'
 
 

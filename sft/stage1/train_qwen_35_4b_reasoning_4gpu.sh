@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# 4-GPU (RTX 4090 48GB) full-data Megatron SFT for AwareVLN-style Qwen3.5-4B reasoning.
-# Uses TP=2 x DP=2, max_length=16384, global_batch_size=128, and TE fused cross-entropy.
+# 4-GPU (RTX 4090 48GB) full-data Megatron SFT for AwareVLN-style Qwen3.5-4B reasoning
+# initialized from the Stage-2 pre-RL checkpoint (SimpleVLN_Qwen35_4B_SFT).
 set -eo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$ROOT"
+CODE_ROOT="${CODE_ROOT:-/workspace/VLN/code/SimpleVLN}"
+RUNS_ROOT="${RUNS_ROOT:-/workspace/VLN/runs}"
+cd "$CODE_ROOT"
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
-export MODEL="${MODEL:-$ROOT/checkpoints/SimpleVLN_Qwen35_4B_RL}"
+export MODEL="${MODEL:-${RUNS_ROOT}/checkpoints/SimpleVLN_Qwen35_4B_SFT}"
 export MODEL_TYPE="${MODEL_TYPE:-qwen3_5}"
 export TEMPLATE="${TEMPLATE:-qwen3_5}"
-export CACHE_DIR="${CACHE_DIR:-/nas/simplevln-reasoning-rl4b-v3-soft-window-cache}"
-export OUTPUT_DIR="${OUTPUT_DIR:-$ROOT/outputs/sft/reasoning_rl_4b_v3_soft_window/checkpoints}"
-export WANDB_MODE="${WANDB_MODE:-offline}"
+export CACHE_DIR="${CACHE_DIR:-${RUNS_ROOT}/cache/simplevln-reasoning-sft4b-v4-cache}"
+export OUTPUT_DIR="${OUTPUT_DIR:-${RUNS_ROOT}/outputs/sft/reasoning_sft_4b_v4/checkpoints}"
+export WANDB_MODE=offline
 export WANDB_PROJECT="${WANDB_PROJECT:-SimpleVLN}"
-export WANDB_EXP_NAME="${WANDB_EXP_NAME:-reasoning-soft-window-full-lr5e-6}"
+export WANDB_EXP_NAME="${WANDB_EXP_NAME:-reasoning-sft4b-v4-soft-window-lr5e-6}"
 export WANDB_DIR="${WANDB_DIR:-$(dirname "$OUTPUT_DIR")}"
-export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$CACHE_DIR/hf}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${CACHE_DIR}/hf}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false
@@ -28,8 +29,8 @@ export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
 export MASTER_PORT="${MASTER_PORT:-29785}"
 
 # Wire RTX 4090 sm89 bf16 FlashAttn2 head_dim=256 compat & offline wandb deps if present.
-compat_dir="${BF16_COMPAT_DIR:-$ROOT/outputs/sft/reasoning_rl_4b/bf16_4090_compat}"
-runtime_deps_dir="${RUNTIME_DEPS_DIR:-$ROOT/outputs/sft/reasoning_rl_4b/runtime_deps}"
+compat_dir="${BF16_COMPAT_DIR:-${RUNS_ROOT}/outputs/sft/reasoning_rl_4b/bf16_4090_compat}"
+runtime_deps_dir="${RUNTIME_DEPS_DIR:-${RUNS_ROOT}/outputs/sft/reasoning_rl_4b/runtime_deps}"
 extra_py=""
 if [[ -d "$compat_dir" ]]; then extra_py="$compat_dir"; fi
 if [[ -d "$runtime_deps_dir" ]]; then extra_py="${extra_py:+$extra_py:}$runtime_deps_dir"; fi
@@ -37,7 +38,8 @@ if [[ -n "$extra_py" ]]; then
     export PYTHONPATH="$extra_py${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
-mkdir -p "$OUTPUT_DIR" "$HF_DATASETS_CACHE"
+mkdir -p "$OUTPUT_DIR" "$WANDB_DIR" "$HF_DATASETS_CACHE"
+echo "MODEL=${MODEL}"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
 echo "CACHE_DIR=${CACHE_DIR}"
 
@@ -60,7 +62,7 @@ megatron sft \
     --model "${MODEL}" \
     --model_type "${MODEL_TYPE}" --template "${TEMPLATE}" \
     --report_to wandb --wandb_project "${WANDB_PROJECT}" --wandb_exp_name "${WANDB_EXP_NAME}" \
-    --save_total_limit "${SAVE_TOTAL_LIMIT:-3}" --save_safetensors true \
+    --save_total_limit "${SAVE_TOTAL_LIMIT:-5}" --save_safetensors true \
     --cached_dataset "${CACHE_DIR}/SFT/R2R/train" "${CACHE_DIR}/SFT/RxR/train" \
     --tensor_model_parallel_size "${TP_SIZE:-2}" \
     --sequence_parallel true \
@@ -82,7 +84,7 @@ megatron sft \
     --num_train_epochs "${NUM_TRAIN_EPOCHS:-1}" \
     --output_dir "${OUTPUT_DIR}" \
     --logging_steps "${LOGGING_STEPS:-1}" \
-    --save_steps "${SAVE_STEPS:-50}" \
+    --save_steps "${SAVE_STEPS:-200}" \
     --max_length "${MAX_LENGTH:-16384}" \
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS:-4}" \
     --no_save_optim true \

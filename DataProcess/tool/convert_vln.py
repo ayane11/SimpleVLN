@@ -109,8 +109,8 @@ def soft_window_reason_prob(start_step, end_step, now_step,
     return peak_prob - (peak_prob - end_prob) * ratio
 
 
-def _build_soft_windows(segments, total_steps, pre_frames=0, default_width=5):
-    """Build non-overlapping soft-window descriptors for reasoning segments."""
+def _build_soft_windows(segments, total_steps, default_width=5):
+    """Build non-overlapping post-entry soft-window descriptors [start_step, end_step)."""
     raw = []
     for segment in segments:
         if segment['type'] == 'only_act':
@@ -123,8 +123,8 @@ def _build_soft_windows(segments, total_steps, pre_frames=0, default_width=5):
         seg_end = segment.get('end_step', step + default_width)
         if seg_end <= seg_start:
             seg_end = seg_start + default_width
-        w_start = max(0, seg_start - pre_frames)
-        w_end = min(total_steps, max(w_start + 1, seg_end - pre_frames))
+        w_start = max(0, seg_start)
+        w_end = min(total_steps, max(w_start + 1, seg_end))
         if w_end <= step:
             w_end = min(total_steps, step + 1)
         raw.append({
@@ -149,15 +149,8 @@ def _build_soft_windows(segments, total_steps, pre_frames=0, default_width=5):
 
 def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                         cot_index=None, dataset=None, action_control=False,
-                        drop_pre_node_buffer=False, direct_action_keep_prob=1.0,
-                        stop_repeat=1, soft_window=False, soft_window_pre_frames=0,
-                        empty_memory_drop_prob=0.0, sampling_rng=None, stats=None):
-    if not (0.0 < direct_action_keep_prob <= 1.0):
-        raise ValueError(f"direct_action_keep_prob must be in (0, 1], got {direct_action_keep_prob!r}")
-    if stop_repeat < 1:
-        raise ValueError(f"stop_repeat must be >= 1, got {stop_repeat!r}")
-    if soft_window_pre_frames < 0:
-        raise ValueError(f"soft_window_pre_frames must be >= 0, got {soft_window_pre_frames!r}")
+                        soft_window=False, empty_memory_drop_prob=0.0,
+                        sampling_rng=None, stats=None):
     if not (0.0 <= empty_memory_drop_prob < 1.0):
         raise ValueError(f"empty_memory_drop_prob must be in [0, 1), got {empty_memory_drop_prob!r}")
 
@@ -193,16 +186,13 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                     raise ValueError(f"Invalid reasoning node at {key}, step {step}")
                 nodes[step] = clean_reasoning_update(update)
             if soft_window:
-                soft_windows = _build_soft_windows(
-                    record['segments'], len(action_texts), pre_frames=soft_window_pre_frames
-                )
+                soft_windows = _build_soft_windows(record['segments'], len(action_texts))
 
-        pre_node_steps = {step - 1 for step in nodes if step > 0}
         # Materialize chunks before sampling so RNG draws cannot alter chunk boundaries.
         chunks = list(action_chunks(action_texts, nodes))
         if cot_index is not None and not action_control and soft_window:
             # Build unified ordered events: every frame inside each 5-frame soft window
-            # plus every only_act chunk outside all soft windows (no downsampling by default).
+            # plus every only_act chunk outside all soft windows.
             window_frames = set()
             events = []
             for win in soft_windows:
@@ -229,7 +219,6 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                 frames = normalize_pair(sample_history_plus_current(images[:start + 1], max_history))
                 prompt = build_vln_prompt(instruction, len(frames))
                 has_stop = 'stop' in action.lower()
-                is_exact_stop = action.strip().lower() == 'stop'
                 turns = []
 
                 def _prev_steps_ago():
@@ -247,8 +236,11 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                     w_start = active_win['start_step']
                     w_end = active_win['end_step']
                     step_memory = rewrite_next_plan(active_win['updated_content'], action_texts[start])
-                    p_reason = soft_window_reason_prob(w_start, w_end, start)
-                    if rng.random() < p_reason:
+                    emit_reason = (
+                        True if start <= w_start
+                        else rng.random() < soft_window_reason_prob(w_start, w_end, start)
+                    )
+                    if emit_reason:
                         steps_ago = _prev_steps_ago()
                         decision = prompt + memory_prompt(memory, steps_ago=steps_ago)
                         turns.append((decision, 'REASON: ' + step_memory))
@@ -256,42 +248,23 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                             stats['choice_reason'] += 1
 
                         action_prompt = prompt + memory_prompt(step_memory, action_only=True, steps_ago=0)
-                        action_reply = 'ACTION: ' + action
-                        turns.append((action_prompt, action_reply))
+                        turns.append((action_prompt, action))
                         if stats is not None:
                             stats['action_after_reason'] += 1
                             if has_stop:
                                 stats['action_after_reason_stop'] += 1
-                        if is_exact_stop and stop_repeat > 1:
-                            for _ in range(stop_repeat - 1):
-                                turns.append((action_prompt, action_reply))
-                            if stats is not None:
-                                stats['stop_repeat_extra'] += stop_repeat - 1
                     else:
-                        # AwareVLN window action supervision: 30% old memory, 70% fresh new memory.
-                        # At start <= w_start, no earlier frame in this window could have updated memory yet.
-                        if start <= w_start or rng.random() < 0.3:
-                            ctx_memory = memory
-                            ctx_steps_ago = _prev_steps_ago()
-                        else:
-                            ref_step = rng.randrange(w_start, start)
-                            ctx_memory = rewrite_next_plan(active_win['updated_content'], action_texts[ref_step])
-                            ctx_steps_ago = start - ref_step
+                        # Inside (w_start, w_end), old memory is 100% supervised as REASON above;
+                        # ACTION supervision in the window exclusively pairs with fresh new memory (1..4 steps ago).
+                        ref_step = rng.randrange(w_start, start)
+                        ctx_memory = rewrite_next_plan(active_win['updated_content'], action_texts[ref_step])
+                        ctx_steps_ago = start - ref_step
                         decision = prompt + memory_prompt(ctx_memory, steps_ago=ctx_steps_ago)
-                        action_reply = 'ACTION: ' + action
-                        turns.append((decision, action_reply))
+                        turns.append((decision, 'ACTION: ' + action))
                         if stats is not None:
                             stats['choice_action_stop' if has_stop else 'choice_action_move'] += 1
-                        if is_exact_stop and stop_repeat > 1:
-                            for _ in range(stop_repeat - 1):
-                                turns.append((decision, action_reply))
-                            if stats is not None:
-                                stats['stop_repeat_extra'] += stop_repeat - 1
                 else:
-                    if (not has_stop) and direct_action_keep_prob < 1.0 and rng.random() > direct_action_keep_prob:
-                        if stats is not None:
-                            stats['dropped_direct_move'] += 1
-                        continue
+                    # AwareVLN only_act supervision: P_OLD_THOUGHT_TO_ACT = 1 - empty_memory_drop_prob (0.9).
                     if memory and empty_memory_drop_prob > 0.0 and rng.random() < empty_memory_drop_prob:
                         ctx_memory = ''
                         ctx_steps_ago = None
@@ -301,15 +274,9 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                         ctx_memory = memory
                         ctx_steps_ago = _prev_steps_ago()
                     decision = prompt + memory_prompt(ctx_memory, steps_ago=ctx_steps_ago)
-                    action_reply = 'ACTION: ' + action
-                    turns.append((decision, action_reply))
+                    turns.append((decision, 'ACTION: ' + action))
                     if stats is not None:
                         stats['choice_action_stop' if has_stop else 'choice_action_move'] += 1
-                    if is_exact_stop and stop_repeat > 1:
-                        for _ in range(stop_repeat - 1):
-                            turns.append((decision, action_reply))
-                        if stats is not None:
-                            stats['stop_repeat_extra'] += stop_repeat - 1
 
                 for question, answer in turns:
                     out_samples.append({
@@ -330,7 +297,6 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                 turns.append((prompt, action))
             else:
                 has_stop = 'stop' in action.lower()
-                is_exact_stop = action.strip().lower() == 'stop'
                 steps_ago = None if last_reason_step is None else start - last_reason_step
                 if start in nodes:
                     decision = prompt + memory_prompt(memory, steps_ago=steps_ago)
@@ -341,36 +307,16 @@ def convert_episode_vln(episode, image_root, out_samples, max_history=None, *,
                     last_reason_step = start
 
                     action_prompt = prompt + memory_prompt(memory, action_only=True, steps_ago=0)
-                    action_reply = 'ACTION: ' + action
-                    turns.append((action_prompt, action_reply))
+                    turns.append((action_prompt, action))
                     if stats is not None:
                         stats['action_after_reason'] += 1
                         if has_stop:
                             stats['action_after_reason_stop'] += 1
-                    if is_exact_stop and stop_repeat > 1:
-                        for _ in range(stop_repeat - 1):
-                            turns.append((action_prompt, action_reply))
-                        if stats is not None:
-                            stats['stop_repeat_extra'] += stop_repeat - 1
                 else:
-                    if drop_pre_node_buffer and (start in pre_node_steps) and not has_stop:
-                        if stats is not None:
-                            stats['dropped_pre_node_buffer'] += 1
-                        continue
-                    if (not has_stop) and direct_action_keep_prob < 1.0 and rng.random() > direct_action_keep_prob:
-                        if stats is not None:
-                            stats['dropped_direct_move'] += 1
-                        continue
                     decision = prompt + memory_prompt(memory, steps_ago=steps_ago)
-                    action_reply = 'ACTION: ' + action
-                    turns.append((decision, action_reply))
+                    turns.append((decision, 'ACTION: ' + action))
                     if stats is not None:
                         stats['choice_action_stop' if has_stop else 'choice_action_move'] += 1
-                    if is_exact_stop and stop_repeat > 1:
-                        for _ in range(stop_repeat - 1):
-                            turns.append((decision, action_reply))
-                        if stats is not None:
-                            stats['stop_repeat_extra'] += stop_repeat - 1
             for question, answer in turns:
                 out_samples.append({
                     "system": SYSTEM_PROMPT, "images": frames,
@@ -398,32 +344,16 @@ def main():
     parser.add_argument("--dataset", choices=("r2r", "rxr"))
     parser.add_argument("--action-control", action="store_true",
                         help="Use the same annotated trajectories and chunk boundaries with plain action targets")
-    parser.add_argument("--drop-pre-node-buffer", action="store_true",
-                        help="Skip non-stop only_act decision chunks at step = node_index - 1")
-    parser.add_argument("--direct-action-keep-prob", type=float, default=1.0,
-                        help="Keep probability in (0, 1] for non-stop only_act move chunks")
-    parser.add_argument("--stop-repeat", type=int, default=1,
-                        help="Number of copies to emit for exact 'ACTION: stop' samples")
     parser.add_argument("--soft-window", action="store_true",
                         help="Enable AwareVLN-style 5-frame trapezoidal soft-window reasoning sampling")
-    parser.add_argument("--soft-window-pre-frames", type=int, default=0,
-                        help="Frames before segment start_step to include in soft window (default: 0)")
     parser.add_argument("--empty-memory-drop-prob", type=float, default=0.0,
                         help="Probability in [0, 1) to drop memory on only_act frames in soft-window mode")
     args = parser.parse_args()
     if bool(args.cot_index) != bool(args.dataset) or (args.action_control and not args.cot_index):
         parser.error("--cot-index and --dataset are required together for annotated data")
-    if not (0.0 < args.direct_action_keep_prob <= 1.0):
-        parser.error("--direct-action-keep-prob must be in (0, 1]")
-    if args.stop_repeat < 1:
-        parser.error("--stop-repeat must be >= 1")
-    if args.soft_window_pre_frames < 0:
-        parser.error("--soft-window-pre-frames must be >= 0")
     if not (0.0 <= args.empty_memory_drop_prob < 1.0):
         parser.error("--empty-memory-drop-prob must be in [0, 1)")
-    if (args.drop_pre_node_buffer or args.direct_action_keep_prob < 1.0 or args.stop_repeat != 1
-            or args.soft_window or args.empty_memory_drop_prob > 0.0) and (
-            not args.cot_index or args.action_control):
+    if (args.soft_window or args.empty_memory_drop_prob > 0.0) and (not args.cot_index or args.action_control):
         parser.error("Reasoning sampling flags require --cot-index without --action-control")
     cot_index = json.loads(args.cot_index.read_text()) if args.cot_index else None
 
@@ -448,11 +378,7 @@ def main():
             cot_index=cot_index,
             dataset=args.dataset,
             action_control=args.action_control,
-            drop_pre_node_buffer=args.drop_pre_node_buffer,
-            direct_action_keep_prob=args.direct_action_keep_prob,
-            stop_repeat=args.stop_repeat,
             soft_window=args.soft_window,
-            soft_window_pre_frames=args.soft_window_pre_frames,
             empty_memory_drop_prob=args.empty_memory_drop_prob,
             sampling_rng=sampling_rng,
             stats=stats,
@@ -473,9 +399,6 @@ def main():
                 f"choice_action_stop={stats['choice_action_stop']}, "
                 f"action_after_reason={stats['action_after_reason']} "
                 f"(stop={stats['action_after_reason_stop']}), "
-                f"dropped_pre_node_buffer={stats['dropped_pre_node_buffer']}, "
-                f"dropped_direct_move={stats['dropped_direct_move']}, "
-                f"stop_repeat_extra={stats['stop_repeat_extra']}, "
                 f"empty_memory_dropped={stats['empty_memory_dropped']}, "
                 f"total_emitted={len(samples)}"
             )

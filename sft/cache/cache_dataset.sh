@@ -1,4 +1,5 @@
 #!/bin/bash
+RUNS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/runs"
 set -euo pipefail
 
 # Export already-converted training JSONs as ms-swift Arrow caches.
@@ -11,8 +12,8 @@ set -euo pipefail
 #   bash cache_dataset.sh                    # cache all five datasets
 #   bash cache_dataset.sh SFT/R2R SFT/RxR    # cache selected datasets
 
-MODEL="${MODEL:-/path/to/models/Qwen3-VL-4B-Instruct}"
-CACHE_DIR="${CACHE_DIR:-/path/to/cache_data}"
+MODEL="${MODEL:-${RUNS_ROOT}/checkpoints/Qwen3-VL-4B-Instruct}"
+CACHE_DIR="${CACHE_DIR:-${RUNS_ROOT}/simplevln-runtime/cache/sft}"
 JSON_DIR="${JSON_DIR:-${CACHE_DIR}/annotations}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -57,7 +58,7 @@ for DATASET in "${DATASETS[@]}"; do
     python "${SCRIPT_DIR}/fast_cache_dataset.py" \
         --model "${MODEL}" "${model_args[@]}" \
         --dataset "${JSON}" \
-        --dataset_num_proc 64 \
+        --dataset_num_proc "${CACHE_NUM_PROC:-64}" \
         --to_cached_dataset true \
         --output_dir "${CACHE_DIR}/${DATASET}"
 

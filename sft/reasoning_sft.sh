@@ -1,59 +1,69 @@
 #!/usr/bin/env bash
-# Run from a SimpleVLN checkout in the SFT environment.
+# Prepare, cache, or train AwareVLN-style reasoning SFT inside dyj_vln (simplevln-sft env).
 set -euo pipefail
-root="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$root"
-mode="${MODE:-reasoning}"
+
+CODE_ROOT="${CODE_ROOT:-/workspace/VLN/code/SimpleVLN}"
+RUNS_ROOT="${RUNS_ROOT:-/workspace/VLN/runs}"
+DATA_ROOT="${DATA_ROOT:-/data/vln}"
+
+cd "$CODE_ROOT"
+
+mode="${MODE:-reasoning_soft_window}"
 options=()
 case "$mode" in
-    reasoning)
-        DROP_PRE_NODE_BUFFER="${DROP_PRE_NODE_BUFFER:-1}"
-        DIRECT_ACTION_KEEP_PROB="${DIRECT_ACTION_KEEP_PROB:-0.35}"
-        STOP_REPEAT="${STOP_REPEAT:-2}"
-        if [[ "$DROP_PRE_NODE_BUFFER" == 1 ]]; then options+=(--drop-pre-node-buffer); fi
-        options+=(--direct-action-keep-prob "$DIRECT_ACTION_KEEP_PROB" --stop-repeat "$STOP_REPEAT")
-        ;;
     reasoning_soft_window)
-        SOFT_WINDOW_PRE_FRAMES="${SOFT_WINDOW_PRE_FRAMES:-0}"
-        DIRECT_ACTION_KEEP_PROB="${DIRECT_ACTION_KEEP_PROB:-1.0}"
-        STOP_REPEAT="${STOP_REPEAT:-2}"
         EMPTY_MEMORY_DROP_PROB="${EMPTY_MEMORY_DROP_PROB:-0.1}"
-        options+=(
-            --soft-window
-            --soft-window-pre-frames "$SOFT_WINDOW_PRE_FRAMES"
-            --direct-action-keep-prob "$DIRECT_ACTION_KEEP_PROB"
-            --stop-repeat "$STOP_REPEAT"
-            --empty-memory-drop-prob "$EMPTY_MEMORY_DROP_PROB"
-        )
+        options+=(--soft-window --empty-memory-drop-prob "$EMPTY_MEMORY_DROP_PROB")
         ;;
-    action_control) options+=(--action-control) ;;
-    *) echo "MODE must be reasoning, reasoning_soft_window, or action_control" >&2; exit 2 ;;
+    reasoning)
+        ;;
+    action_control)
+        options+=(--action-control)
+        ;;
+    *)
+        echo "MODE must be reasoning_soft_window, reasoning, or action_control" >&2
+        exit 2
+        ;;
 esac
-work="${WORK_DIR:-$root/outputs/sft/$mode}"
-export MODEL="${MODEL:-$root/checkpoints/SimpleVLN_Qwen35_4B_RL}"
-export MODEL_TYPE=qwen3_5 TEMPLATE=qwen3_5
-export JSON_DIR="${JSON_DIR:-$work/annotations}"
-export CACHE_DIR="${CACHE_DIR:-$work/cache}"
-export OUTPUT_DIR="${OUTPUT_DIR:-$work/checkpoints}"
+
+work="${WORK_DIR:-${RUNS_ROOT}/outputs/sft/reasoning_sft_4b_v4}"
+export MODEL="${MODEL:-${RUNS_ROOT}/checkpoints/SimpleVLN_Qwen35_4B_SFT}"
+export MODEL_TYPE="${MODEL_TYPE:-qwen3_5}"
+export TEMPLATE="${TEMPLATE:-qwen3_5}"
+export JSON_DIR="${JSON_DIR:-${work}/annotations}"
+export CACHE_DIR="${CACHE_DIR:-${RUNS_ROOT}/cache/simplevln-reasoning-sft4b-v4-cache}"
+export OUTPUT_DIR="${OUTPUT_DIR:-${work}/checkpoints}"
+export COT_INDEX="${COT_INDEX:-${RUNS_ROOT}/outputs/reasoning/full_qwen35_27b/exports/cot_index.json}"
+
 case "${1:-}" in
     prepare)
         for ds in r2r rxr; do
             name=R2R
             if [[ "$ds" == rxr ]]; then name=RxR; fi
-            python DataProcess/tool/convert_vln.py \
-                --annotation_path "$root/data/annotations/simplevln/sft/$ds/annotations.json" \
-                --image_root "$root/data/images/$ds" --output_path "$JSON_DIR/SFT/$name.json" \
-                --cot-index "${COT_INDEX:-$root/outputs/reasoning/full_qwen35_27b/exports/cot_index.json}" \
+            python "${CODE_ROOT}/DataProcess/tool/convert_vln.py" \
+                --annotation_path "${DATA_ROOT}/annotations/simplevln/sft/${ds}/annotations.json" \
+                --image_root "${DATA_ROOT}/images/${ds}" \
+                --output_path "${JSON_DIR}/SFT/${name}.json" \
+                --cot-index "${COT_INDEX}" \
                 --dataset "$ds" "${options[@]}"
-        done ;;
-    cache) bash sft/cache/cache_dataset.sh SFT/R2R SFT/RxR ;;
+        done
+        ;;
+    cache)
+        bash "${CODE_ROOT}/sft/cache/cache_dataset.sh" SFT/R2R SFT/RxR
+        ;;
     train)
-        export NNODES="${NNODES:-1}" NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
-        export NODE_RANK="${NODE_RANK:-0}" MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
+        export NNODES="${NNODES:-1}"
+        export NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
+        export NODE_RANK="${NODE_RANK:-0}"
+        export MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
         if [[ "$mode" == "reasoning_soft_window" ]]; then
-            bash sft/stage1/train_qwen_35_4b_reasoning_4gpu.sh
+            bash "${CODE_ROOT}/sft/stage1/train_qwen_35_4b_reasoning_4gpu.sh"
         else
-            bash sft/stage1/train_qwen_35_4b_stage1.sh
-        fi ;;
-    *) echo "Usage: bash sft/reasoning_sft.sh {prepare|cache|train}" >&2; exit 2 ;;
+            bash "${CODE_ROOT}/sft/stage1/train_qwen_35_4b_stage1.sh"
+        fi
+        ;;
+    *)
+        echo "Usage: bash ${CODE_ROOT}/sft/reasoning_sft.sh {prepare|cache|train}" >&2
+        exit 2
+        ;;
 esac

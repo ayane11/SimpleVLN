@@ -72,9 +72,19 @@ class ConversionTests(unittest.TestCase):
         samples, control = [], []
         for rows, plain in [(samples, False), (control, True)]:
             vln.convert_episode_vln(ep, self.root, rows, cot_index=index, dataset='r2r', action_control=plain)
-        actions = [row for row in samples if row['messages'][1]['value'].startswith('ACTION: ')]
-        self.assertEqual([r['messages'][1]['value'][8:] for r in actions],
-                         [r['messages'][1]['value'] for r in control])
+        actions = []
+        for row in samples:
+            user_val, reply_val = row['messages'][0]['value'], row['messages'][1]['value']
+            if reply_val.startswith('REASON: '):
+                continue
+            if 'Choose whether' in user_val:
+                self.assertTrue(reply_val.startswith('ACTION: '))
+                actions.append(reply_val[8:])
+            else:
+                self.assertIn('Return the next action chunk.', user_val)
+                self.assertFalse(reply_val.startswith(('ACTION:', 'REASON:')))
+                actions.append(reply_val)
+        self.assertEqual(actions, [r['messages'][1]['value'] for r in control])
         self.assertEqual([Path(r['images'][-1]).name for r in samples],
                          ['000.jpg', '001.jpg', '001.jpg', '003.jpg', '003.jpg'])
         self.assertNotIn('door visible', samples[1]['messages'][0]['value'])
@@ -98,29 +108,6 @@ class ConversionTests(unittest.TestCase):
         self.assertIn('updated 5 steps ago): I see a hall.', samples[6]['messages'][0]['value'])
         self.assertEqual(strip_stale_next_plan('The next plan is to move forward.'), 'The next plan is to move forward.')
 
-    def test_scheme_1a_sampling_buffer_drop_and_stop_protection(self):
-        self.frames('scene_1', 15)
-        ep = self.episode(actions=[-1] + [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 1, 0])
-        index = {'["r2r","1",0]': {'instruction': 'go', 'segments': [
-            {'type': 'newroom', 'index': 12, 'updated_content': 'I see stairs. The next plan is to move forward.'}]}}
-        full_samples, filtered_samples = [], []
-        with patch.object(vln, 'MAX_ACTIONS_PER_SAMPLE', 1), patch.object(vln, 'COMBINE_PROB', 0.0):
-            vln.convert_episode_vln(ep, self.root, full_samples, cot_index=index, dataset='r2r')
-            vln.convert_episode_vln(
-                ep, self.root, filtered_samples, cot_index=index, dataset='r2r',
-                drop_pre_node_buffer=True, direct_action_keep_prob=0.35, stop_repeat=2,
-                sampling_rng=random.Random(42))
-        self.assertFalse(any(Path(r['images'][-1]).name == '011.jpg' for r in filtered_samples))
-        full_reasons = [r for r in full_samples if r['messages'][1]['value'].startswith('REASON: ')]
-        filt_reasons = [r for r in filtered_samples if r['messages'][1]['value'].startswith('REASON: ')]
-        self.assertEqual(filt_reasons, full_reasons)
-        filt_after = [r for r in filtered_samples if 'Return ACTION:' in r['messages'][0]['value']]
-        full_after = [r for r in full_samples if 'Return ACTION:' in r['messages'][0]['value']]
-        self.assertEqual(filt_after, full_after)
-        filt_stops = [r for r in filtered_samples if r['messages'][1]['value'] == 'ACTION: stop']
-        self.assertEqual(len(filt_stops), 2)
-        self.assertLess(len(filtered_samples), len(full_samples))
-
     def test_soft_window_trapezoidal_prob_and_full_no_downsample(self):
         self.assertAlmostEqual(vln.soft_window_reason_prob(10, 15, 10), 0.5)
         self.assertAlmostEqual(vln.soft_window_reason_prob(10, 15, 11.25), 0.75)
@@ -140,20 +127,18 @@ class ConversionTests(unittest.TestCase):
         with patch.object(vln, 'MAX_ACTIONS_PER_SAMPLE', 1), patch.object(vln, 'COMBINE_PROB', 0.0):
             vln.convert_episode_vln(
                 ep, self.root, samples, cot_index=index, dataset='r2r',
-                soft_window=True, soft_window_pre_frames=1,
-                direct_action_keep_prob=1.0, stop_repeat=2,
-                empty_memory_drop_prob=0.0, sampling_rng=random.Random(7), stats=stats,
+                soft_window=True, empty_memory_drop_prob=0.0,
+                sampling_rng=random.Random(7), stats=stats,
             )
-        # All 5 frames in [7, 12) (i.e. index-1 .. index+3) must be represented and no only_act dropped.
+        # All 20 frames (including all 5 post-entry frames [8, 13)) are represented without downsampling.
         frame_names = {Path(r['images'][-1]).name for r in samples}
         for step in range(20):
             self.assertIn(f'{step:03d}.jpg', frame_names)
-        self.assertEqual(stats['dropped_direct_move'], 0)
         self.assertGreater(stats['choice_reason'], 0)
         self.assertEqual(stats['choice_reason'], stats['action_after_reason'])
-        # Stop at final frame is preserved and repeated once (total 2 exact stop copies).
+        # Terminal stop is preserved naturally once (no artificial duplication).
         stops = [r for r in samples if r['messages'][1]['value'] == 'ACTION: stop']
-        self.assertEqual(len(stops), 2)
+        self.assertEqual(len(stops), 1)
         # Post-window frames carry updated memory with steps_ago > 0 and stripped stale plan.
         late = [r for r in samples if Path(r['images'][-1]).name == '016.jpg']
         self.assertEqual(len(late), 1)
@@ -175,9 +160,7 @@ class ConversionTests(unittest.TestCase):
             [sys.executable, str(ROOT / 'tool/convert_vln.py'),
              '--annotation_path', str(ann), '--image_root', str(self.root),
              '--output_path', str(out), '--cot-index', str(cot), '--dataset', 'r2r',
-             '--soft-window', '--soft-window-pre-frames', '1',
-             '--direct-action-keep-prob', '1.0', '--stop-repeat', '2',
-             '--empty-memory-drop-prob', '0.1'],
+             '--soft-window', '--empty-memory-drop-prob', '0.1'],
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -228,15 +211,28 @@ class ConversionTests(unittest.TestCase):
             if 'Choose whether' in user_text:
                 self.assertNotIn('updated 0 steps ago', user_text)
                 self.assertNotIn('The next plan is to ', user_text)
+            # Entry frame w_start (002.jpg) must 100% deterministically emit REASON on choice turn.
+            if frame == '002.jpg' and 'Choose whether' in user_text:
+                self.assertTrue(reply.startswith('REASON: '), (frame, user_text, reply))
+            # Inside the 5-frame window [2, 7), old memory ((none)) 100% maps to REASON and new memory 100% maps to ACTION.
+            if frame in expected_plan_by_frame and 'Choose whether' in user_text:
+                if 'Navigation memory: (none)' in user_text:
+                    self.assertTrue(reply.startswith('REASON: '), (frame, user_text, reply))
+                else:
+                    self.assertIn('I see a hallway. The agent has exited the bedroom.', user_text)
+                    self.assertIn('updated ', user_text)
+                    self.assertTrue(reply.startswith('ACTION: '), (frame, user_text, reply))
             # Every REASON turn and its paired action_only (steps_ago=0) turn must match frame's expert action.
             if reply.startswith('REASON: '):
                 self.assertIn(frame, expected_plan_by_frame)
                 expected_plan = expected_plan_by_frame[frame]
                 self.assertTrue(reply.endswith(expected_plan), (frame, reply))
                 follow_up = samples[i + 1]
-                self.assertIn('Return ACTION:', follow_up['messages'][0]['value'])
+                self.assertIn('Return the next action chunk.', follow_up['messages'][0]['value'])
+                self.assertNotIn('Return ACTION:', follow_up['messages'][0]['value'])
                 self.assertIn('updated 0 steps ago', follow_up['messages'][0]['value'])
                 self.assertIn(expected_plan, follow_up['messages'][0]['value'])
+                self.assertFalse(follow_up['messages'][1]['value'].startswith(('ACTION:', 'REASON:')))
 
     def test_missing_frames_are_not_padded_for_movement(self):
         self.frames('scene_1', 1)

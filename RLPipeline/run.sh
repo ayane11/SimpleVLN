@@ -2,7 +2,7 @@
 # Fresh trajectory generation, followed by VLM instruction labeling.
 set -euo pipefail
 cd "$(dirname "$0")"
-export VLN_DATA="${VLN_DATA:-/root/code/data}"
+export VLN_DATA="${VLN_DATA:-/data/vln}"
 PY=${PY:-python3}
 
 mp3d() {

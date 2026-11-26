@@ -1,4 +1,5 @@
 #!/bin/bash
+RUNS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/runs"
 # Launch N vLLM servers on sequential ports, one per GPU (or per TP group).
 # Pairs with eval.sh, which uses --vllm_port_start 22001
 # --vllm_num_servers <N>.
@@ -22,15 +23,15 @@ export HF_HUB_DISABLE_XET=1
 export WANDB_MODE=offline
 SIMPLEVLN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export VLN_DATA_ROOT="${VLN_DATA_ROOT:-${SIMPLEVLN_ROOT}/eval/data/vln_data}"
-export HF_HOME="${SIMPLEVLN_ROOT}/.cache/huggingface"
-export XDG_CACHE_HOME="${SIMPLEVLN_ROOT}/.cache"
-export TMPDIR="${SIMPLEVLN_ROOT}/.cache/tmp"
+export HF_HOME="${RUNS_ROOT}/simplevln-runtime/cache/huggingface"
+export XDG_CACHE_HOME="${RUNS_ROOT}/simplevln-runtime/cache"
+export TMPDIR="${RUNS_ROOT}/simplevln-runtime/cache/tmp"
 mkdir -p "$HF_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
 
-MODEL_PATH="${MODEL_PATH:-${SIMPLEVLN_ROOT}/checkpoints/SimpleVLN_Qwen35_4B_RL}"
+MODEL_PATH="${MODEL_PATH:-${RUNS_ROOT}/checkpoints/SimpleVLN_Qwen35_4B_RL}"
 MODEL_NAME="${MODEL_NAME:-simplevln}"
 BASE_PORT="${BASE_PORT:-22001}"
-LOG_DIR="${LOG_DIR:-$(dirname "$0")/../logs/vllm}"
+LOG_DIR="${LOG_DIR:-${RUNS_ROOT}/outputs/eval/logs/vllm}"
 
 PYTHON="${PYTHON:-/root/miniforge3/envs/simplevln-server/bin/python}"
 VLLM_BIN="${VLLM_BIN:-/root/miniforge3/envs/simplevln-server/bin/vllm}"

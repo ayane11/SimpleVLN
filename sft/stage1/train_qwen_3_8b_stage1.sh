@@ -1,8 +1,10 @@
+RUNS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/runs"
 # 4 nodes x 8 GPUs. Set NODE_RANK=0..3 and MASTER_ADDR to node 0.
 EXPERIMENT_NAME="Qwen_3_8B_stage1"
-OUTPUT_DIR="/path/to/outputs/1epoch/${EXPERIMENT_NAME}"
-CACHE_DIR="/path/to/cache_data"
-echo ${OUTPUT_DIR}
+OUTPUT_DIR="${OUTPUT_DIR:-${RUNS_ROOT}/outputs/sft/1epoch/${EXPERIMENT_NAME}}"
+CACHE_DIR="${CACHE_DIR:-${RUNS_ROOT}/simplevln-runtime/cache/sft}"
+source "$(dirname "${BASH_SOURCE[0]}")/../wandb_env.sh"
+echo "$OUTPUT_DIR"
 
 PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True' \
 NNODES=4 \
@@ -12,7 +14,8 @@ MASTER_PORT="${MASTER_PORT:-29500}" \
 NPROC_PER_NODE=8 \
 MAX_PIXELS=1003520 \
 megatron sft \
-    --model /path/to/models/Qwen3-VL-8B-Instruct \
+    --report_to wandb --wandb_project SimpleVLN --wandb_exp_name "${EXPERIMENT_NAME}" \
+    --model "${MODEL:-${RUNS_ROOT}/checkpoints/Qwen3-VL-8B-Instruct}" \
     --save_safetensors true \
     --cached_dataset "${CACHE_DIR}/SFT/R2R/train" "${CACHE_DIR}/SFT/RxR/train" \
     --tensor_model_parallel_size 2 \

@@ -127,9 +127,9 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('stage', choices=['all', 'prepare', 'generate', 'export'])
-    parser.add_argument('--output', default=str(HERE.parents[1]/'outputs/reasoning/full_qwen35_27b'))
+    parser.add_argument('--output', default=str(HERE.parents[3]/'runs/outputs/reasoning/full_qwen35_27b'))
     parser.add_argument('--data-root', default='/data/vln')
-    parser.add_argument('--model', default='/workspace/VLN/models/Qwen3.5-27B')
+    parser.add_argument('--model', default=str(HERE.parents[3] / 'runs/checkpoints/Qwen3.5-27B'))
     parser.add_argument('--gpus', default='2,3')
     parser.add_argument('--port', type=int, default=22992)
     parser.add_argument('--repair-failed', action='store_true', help='Use tagged evidence and word boundaries for uncached requests during resume')

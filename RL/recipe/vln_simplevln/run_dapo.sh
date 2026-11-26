@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+RUNS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)/runs"
 # Shared SimpleVLN DAPO launcher. Model presets set memory-related defaults only.
 set -euo pipefail
 
@@ -23,10 +24,11 @@ VAL_FILE=${VAL_FILE:-${TRAIN_FILE}}
 AGENT_CFG=${AGENT_CFG:-${SCRIPT_DIR}/config/agent_loop.yaml}
 PROJECT=${PROJECT:-simplevln-dapo}
 EXPERIMENT=${EXPERIMENT:-${PRESET}}
-CKPT_DIR=${CKPT_DIR:-${RL_ROOT}/checkpoints/${PROJECT}/${EXPERIMENT}}
-LOG_DIR=${LOG_DIR:-${RL_ROOT}/logs}
+CKPT_DIR=${CKPT_DIR:-${RUNS_ROOT}/checkpoints/rl/${PROJECT}/${EXPERIMENT}}
+LOG_DIR=${LOG_DIR:-${RUNS_ROOT}/outputs/rl/${PROJECT}/${EXPERIMENT}}
 LOG_FILE=${LOG_FILE:-${LOG_DIR}/${EXPERIMENT}.log}
-LOGGER=${LOGGER:-console}
+export WANDB_MODE=offline
+export WANDB_DIR="${WANDB_DIR:-$LOG_DIR}"
 
 # Run against an existing Ray cluster. All nodes need the same code and model.
 export RAY_ADDRESS=${RAY_ADDRESS:-auto}
@@ -124,7 +126,7 @@ hydra_string() {
 
 # Explicitly propagate recipe settings to Ray actors on every node.
 ENV_ARGS=()
-for name in VLN_ENV_SERVER_URL VLN_PROGRESS_COEF VLN_ADV_TRAJ_LEVEL VLN_TRAJ_LOSS_WEIGHT; do
+for name in WANDB_MODE WANDB_DIR VLN_ENV_SERVER_URL VLN_PROGRESS_COEF VLN_ADV_TRAJ_LEVEL VLN_TRAJ_LOSS_WEIGHT; do
   if [[ -v ${name} ]]; then
     ENV_ARGS+=( "++ray_kwargs.ray_init.runtime_env.env_vars.${name}=$(hydra_string "${!name}")" )
   fi
@@ -193,7 +195,7 @@ command=( "${PYTHON}" -m verl.trainer.main_ppo \
   actor_rollout_ref.ref.fsdp_config.param_offload=${PARAM_OFFLOAD} \
   actor_rollout_ref.ref.log_prob_use_dynamic_bsz=False \
   actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=${MAX_MODEL_LEN} \
-  "trainer.logger=[${LOGGER}]" \
+  "trainer.logger=[console,wandb]" \
   "trainer.project_name=$(hydra_string "${PROJECT}")" \
   "trainer.experiment_name=$(hydra_string "${EXPERIMENT}")" \
   trainer.n_gpus_per_node=${NGPUS} \
@@ -216,5 +218,5 @@ fi
 for path in "${TRAIN_FILE}" "${VAL_FILE}" "${AGENT_CFG}"; do
   [[ -f "${path}" ]] || { echo "Input file does not exist: ${path}" >&2; exit 2; }
 done
-mkdir -p -- "$(dirname -- "${LOG_FILE}")" "${RAY_TMPDIR}"
+mkdir -p -- "$WANDB_DIR" "$(dirname -- "${LOG_FILE}")" "${RAY_TMPDIR}"
 "${command[@]}" 2>&1 | tee -- "${LOG_FILE}"

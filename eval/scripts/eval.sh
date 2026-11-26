@@ -1,4 +1,5 @@
 #!/bin/bash
+RUNS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)/runs"
 # Evaluate R2R (default), RxR, or both val-unseen benchmarks.
 # Defaults: R2R GPU 5, RxR GPU 6; shared server on port 22001.
 # Run inside dyj_vln; Python environments selected explicitly.
@@ -18,9 +19,9 @@ export HF_HUB_DISABLE_XET=1
 export WANDB_MODE=offline
 SIMPLEVLN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export VLN_DATA_ROOT="${VLN_DATA_ROOT:-${SIMPLEVLN_ROOT}/eval/data/vln_data}"
-export HF_HOME="${SIMPLEVLN_ROOT}/.cache/huggingface"
-export XDG_CACHE_HOME="${SIMPLEVLN_ROOT}/.cache"
-export TMPDIR="${SIMPLEVLN_ROOT}/.cache/tmp"
+export HF_HOME="${RUNS_ROOT}/simplevln-runtime/cache/huggingface"
+export XDG_CACHE_HOME="${RUNS_ROOT}/simplevln-runtime/cache"
+export TMPDIR="${RUNS_ROOT}/simplevln-runtime/cache/tmp"
 mkdir -p "$HF_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -33,7 +34,7 @@ case "$BENCHMARK" in
     rxr) export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-6}" ;;
 esac
 EXP_NAME="${EXP_NAME:-qwen35_4b_rl}"
-RESULT_ROOT="${RESULT_ROOT:-./results}"
+RESULT_ROOT="${RESULT_ROOT:-${RUNS_ROOT}/outputs/eval/results}"
 
 VLLM_HOST="${VLLM_HOST:-http://localhost}"
 VLLM_PORT_START="${VLLM_PORT_START:-22001}"

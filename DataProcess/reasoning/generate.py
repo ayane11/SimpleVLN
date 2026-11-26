@@ -213,8 +213,8 @@ def main():
     p.add_argument('--image-root', required=True)
     p.add_argument('--dataset', required=True, help='Dataset namespace, e.g. r2r, rxr, scalevln')
     p.add_argument('--output-dir', required=True)
-    p.add_argument('--model', default=str(HERE.parents[2] / 'models' / 'Qwen3.5-27B'),
-                   help='Local downloaded model; use explicit /workspace/VLN/models/Qwen3.5-27B in Docker')
+    p.add_argument('--model', default=str(HERE.parents[3] / 'runs/checkpoints' / 'Qwen3.5-27B'),
+                   help='Local teacher checkpoint directory')
     p.add_argument('--backend', choices=['transformers', 'vllm'], default='transformers')
     p.add_argument('--base-url', default='http://127.0.0.1:22990/v1')
     p.add_argument('--served-model', default='qwen35-27b')

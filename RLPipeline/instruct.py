@@ -30,7 +30,7 @@ import requests
 import nav
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-DATA_ROOT = os.environ.get("VLN_DATA", "/root/code/data")
+DATA_ROOT = os.environ.get("VLN_DATA", "/data/vln")
 PROMPT_BASE = open(os.path.join(_HERE, "prompt.txt"), encoding="utf-8").read().strip()
 IMG_W, IMG_H = 640, 480
 TAIL = "\n\n---\n\n# Process this route\n\nInput:"

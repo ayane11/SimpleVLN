@@ -133,7 +133,7 @@ def main() -> None:
     parser.add_argument(
         '--root',
         type=Path,
-        default=ROOT / 'outputs/reasoning/full_qwen35_27b',
+        default=ROOT.parents[1] / 'runs/outputs/reasoning/full_qwen35_27b',
         help='Reasoning output directory containing generation/ and exports/',
     )
     parser.add_argument('--cot-index', type=Path, help='Clean a standalone cot_index.json file instead of --root')
