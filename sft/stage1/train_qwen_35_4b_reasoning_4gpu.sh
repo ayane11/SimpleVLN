@@ -15,7 +15,7 @@ export CACHE_DIR="${CACHE_DIR:-${RUNS_ROOT}/cache/simplevln-reasoning-sft4b-v4-c
 export OUTPUT_DIR="${OUTPUT_DIR:-${RUNS_ROOT}/outputs/sft/reasoning_sft_4b_v4/checkpoints}"
 export WANDB_MODE=offline
 export WANDB_PROJECT="${WANDB_PROJECT:-SimpleVLN}"
-export WANDB_EXP_NAME="${WANDB_EXP_NAME:-reasoning-sft4b-v4-soft-window-lr5e-6}"
+export WANDB_EXP_NAME="${WANDB_EXP_NAME:-reasoning-sft4b-v4-soft-window-lr2e-6}"
 export WANDB_DIR="${WANDB_DIR:-$(dirname "$OUTPUT_DIR")}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${CACHE_DIR}/hf}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
@@ -78,9 +78,9 @@ megatron sft \
     --finetune true \
     --cross_entropy_loss_fusion true --cross_entropy_fusion_impl te \
     --overlap_grad_reduce true --overlap_param_gather true \
-    --lr "${LR:-5e-6}" \
+    --lr "${LR:-2e-6}" \
     --lr_warmup_fraction "${LR_WARMUP_FRACTION:-0.05}" \
-    --min_lr "${MIN_LR:-5e-7}" \
+    --min_lr "${MIN_LR:-2e-7}" \
     --num_train_epochs "${NUM_TRAIN_EPOCHS:-1}" \
     --output_dir "${OUTPUT_DIR}" \
     --logging_steps "${LOGGING_STEPS:-1}" \
